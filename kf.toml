@@ -1,0 +1,8 @@
+[project]
+name = "json"
+version = "0.1.0"
+kind = "lib"
+
+[dependencies]
+core = { path = "../komp/libs/core" }
+alloc = { path = "../komp/libs/alloc" }

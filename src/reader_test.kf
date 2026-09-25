@@ -1,0 +1,80 @@
+import core.assert.assert_eq
+
+fun read_first_key(): String {
+    var reader = new_json_reader("{\"kfi\":1}")
+    val _start = reader.begin_object()
+    return reader.read_key()
+}
+
+fun read_first_number(): int64 {
+    var reader = new_json_reader("{\"kfi\":1}")
+    val _start = reader.begin_object()
+    val _key = reader.read_key()
+    return reader.read_int64()
+}
+
+fun read_escaped_value(): String {
+    var reader = new_json_reader("[\"say \\\"hi\\\"\\n\"]")
+    val _start = reader.begin_array()
+    return reader.read_string()
+}
+
+@test
+fun cursor_reads_object_keys(): void {
+    assert_eq(read_first_key().as_str(), "kfi", "cursor reads an object key")
+}
+
+@test
+fun cursor_reads_integer_values(): void {
+    assert_eq(read_first_number(), 1, "cursor reads an integer")
+}
+
+@test
+fun cursor_decodes_string_escapes(): void {
+    assert_eq(read_escaped_value().as_str(), "say \"hi\"\n", "cursor decodes JSON escapes")
+}
+
+@test
+fun cursor_detects_array_end(): void {
+    var reader = new_json_reader("[]")
+    val _start = reader.begin_array()
+    assert_eq(reader.array_has_next(), false, "empty array ends immediately")
+}
+
+@test
+fun cursor_reports_malformed_input(): void {
+    var reader = new_json_reader("{")
+    val _start = reader.begin_object()
+    val _key = reader.read_key()
+    assert_eq(reader.has_error(), true, "malformed input sets an error")
+}
+
+fun key_after_skipped_value(): String {
+    var reader = new_json_reader("{\"skip\":{\"a\":[1,-2.5e3,\"x\",true,null,{}]},\"keep\":\"yes\"}")
+    val _start = reader.begin_object()
+    val _skipped_key = reader.read_key()
+    reader.skip_value()
+    val _more = reader.object_has_next()
+    val _key = reader.read_key()
+    return reader.read_string()
+}
+
+@test
+fun skip_value_passes_over_nested_containers(): void {
+    assert_eq(key_after_skipped_value().as_str(), "yes", "the field after a skipped value reads")
+}
+
+@test
+fun take_null_leaves_a_non_null_value(): void {
+    var reader = new_json_reader("[\"text\"]")
+    val _start = reader.begin_array()
+    val _was_null = reader.take_null()
+    assert_eq(reader.read_string().as_str(), "text", "a non-null value is left for the next read")
+}
+
+@test
+fun take_null_consumes_null(): void {
+    var reader = new_json_reader("[null]")
+    val _start = reader.begin_array()
+    assert_eq(reader.take_null(), true, "null is taken")
+}

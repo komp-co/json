@@ -1,0 +1,302 @@
+// Streaming JSON reader. It keeps only a source string and cursor, so using
+// JSON does not create recursive generic container instantiations in the json
+// crate itself. This is intentionally a token-level API: callers own the
+// semantic shape and consume object fields and array items in order.
+
+extern "C" fun kf_str_slice_to_string(s: str, start: uint64, end: uint64): String
+
+pub struct JsonReader {
+    var source: String
+    var position: uint64
+    var failed: bool
+}
+
+pub fun new_json_reader(source: str): JsonReader {
+    return JsonReader { 
+        source: String.from(source), 
+        position: 0, failed: false 
+    }
+}
+
+impl JsonReader {
+    pub fun has_error(): bool {
+        return self.failed
+    }
+
+    pub mutating fun begin_object(): bool {
+        return self.consume_byte(123)
+    }
+
+    pub mutating fun object_has_next(): bool {
+        return self.container_has_next(125)
+    }
+
+    pub mutating fun begin_array(): bool {
+        return self.consume_byte(91)
+    }
+
+    pub mutating fun array_has_next(): bool {
+        return self.container_has_next(93)
+    }
+
+    pub mutating fun read_key(): String {
+        val key = self.read_string()
+        if !self.consume_byte(58) { self.failed = true }
+        return key
+    }
+
+    pub mutating fun read_string(): String {
+        self.skip_space()
+        if self.peek() != 34 {
+            self.failed = true
+            return ""
+        }
+        self.position = self.position + 1
+        var out = ""
+        var start = self.position
+        while self.position < self.source.byte_len() {
+            val byte = self.peek()
+            when self.peek() {
+                34 => {
+                    self.append_slice(&var out, start, self.position)
+                    self.position = self.position + 1
+                    return out
+                }
+                92 => {
+                    self.append_slice(&var out, start, self.position)
+                    self.position = self.position + 1
+                    self.append_escape(&var out)
+                    start = self.position
+                }
+                _ => self.position = self.position + 1
+            }
+        }
+        self.failed = true
+        return out
+    }
+
+    pub mutating fun read_int64(): int64 {
+        self.skip_space()
+        var negative = false
+        if self.peek() == 45 {
+            negative = true
+            self.position = self.position + 1
+        }
+        var value: int64 = 0
+        var digits: uint64 = 0
+        while true {
+            val byte = self.peek()
+            if byte < 48 || byte > 57 { break }
+            value = value * 10 + ((byte - 48) as int64)
+            self.position = self.position + 1
+            digits = digits + 1
+        }
+        if digits == 0 { self.failed = true }
+        if negative { return 0 - value }
+        return value
+    }
+
+    pub mutating fun read_bool(): bool {
+        self.skip_space()
+        if self.consume_word("true") { return true }
+        if self.consume_word("false") { return false }
+        self.failed = true
+        return false
+    }
+
+    pub mutating fun read_null(): bool {
+        self.skip_space()
+        if self.consume_word("null") { return true }
+        self.failed = true
+        return false
+    }
+
+    /// True when the next value is `null`, which is then consumed; otherwise
+    /// nothing is.
+    pub mutating fun take_null(): bool {
+        self.skip_space()
+        return self.consume_word("null")
+    }
+
+    /// Consumes the next value whatever it is, nested containers included, so
+    /// a caller can pass over fields it does not know.
+    pub mutating fun skip_value(): void {
+        self.skip_space()
+        val byte = self.peek()
+        if byte == 34 {
+            val _text = self.read_string()
+        } else if byte == 123 {
+            self.position = self.position + 1
+            while self.object_has_next() {
+                val _key = self.read_key()
+                self.skip_value()
+            }
+        } else if byte == 91 {
+            self.position = self.position + 1
+            while self.array_has_next() {
+                self.skip_value()
+            }
+        } else if byte == 116 || byte == 102 {
+            val _flag = self.read_bool()
+        } else if byte == 110 {
+            val _null = self.read_null()
+        } else {
+            self.skip_number()
+        }
+    }
+
+    mutating fun skip_number(): void {
+        val start = self.position
+        while self.position < self.source.byte_len() {
+            val byte = self.peek()
+            val numeric = (byte >= 48 && byte <= 57) || byte == 45 || byte == 43 || byte == 46 || byte == 101 ||
+                byte == 69
+            if !numeric { break }
+            self.position = self.position + 1
+        }
+        if self.position == start { self.failed = true }
+    }
+
+    mutating fun container_has_next(end_byte: uint8): bool {
+        self.skip_space()
+        if self.peek() == end_byte {
+            self.position = self.position + 1
+            return false
+        }
+        if self.peek() == 44 {
+            self.position = self.position + 1
+            self.skip_space()
+        }
+        if self.peek() == end_byte {
+            self.failed = true
+            return false
+        }
+        return !self.failed
+    }
+
+    mutating fun consume_byte(expected: uint8): bool {
+        self.skip_space()
+        if self.peek() != expected {
+            self.failed = true
+            return false
+        }
+        self.position = self.position + 1
+        return true
+    }
+
+    mutating fun consume_word(word: str): bool {
+        val wn = word.byte_len()
+        val sn = self.source.byte_len()
+        if self.position + wn > sn { return false }
+        // `0..wn` binds the range's type from its START, so a bare `0` makes the
+        // cursor an int32 and `self.position + i` mixes widths. Naming the zero
+        // is what keeps the loop idiomatic and the arithmetic uint64.
+        val zero: uint64 = 0
+        while i in zero..wn {
+            if self.source.byte(self.position + i) != word.byte(i) {
+                return false
+            }
+        }
+        self.position = self.position + wn
+        return true
+    }
+
+    mutating fun skip_space(): void {
+        val n = self.source.byte_len()
+        while self.position < n {
+            val byte = self.peek()
+            
+            if byte == 32 || byte == 9 || byte == 10 || byte == 13 {
+                self.position = self.position + 1
+            } else {
+                return
+            }
+        }
+    }
+
+    fun peek(): uint8 {
+        val n = self.source.byte_len()
+        if self.position >= n { return 0 }
+        return self.source.byte(self.position)
+    }
+
+    fun append_slice(out: &var String, start: uint64, end: uint64): void {
+        if end > start {
+            // Bound to a local rather than handed in inline: `substring` returns
+            // a fresh String, and a String passed straight into a `str` parameter
+            // becomes a temporary that nothing drops (komp #430). LeakSanitizer
+            // caught it as 36 bytes out of `kf_realloc`.
+            val piece = self.source.substring(start, end)
+            out.append(piece.as_str())
+        }
+    }
+
+    mutating fun append_escape(out: &var String): void {
+        when self.peek() {
+            34  => out.append("\"")
+            92  => out.append("\\")
+            47  => out.append("/")
+            98  => out.append("\b")
+            102 => out.append("\f")
+            110 => out.append("\n")
+            114 => out.append("\r")
+            116 => out.append("\t")
+            117 => {
+                self.position = self.position + 1
+                self.append_unicode_byte(out)
+                return
+            }
+            _ => {
+                self.failed = true
+                return
+            }
+        }
+        self.position = self.position + 1
+    }
+
+    mutating fun append_unicode_byte(out: &var String): void {
+        if self.position + 4 > self.source.byte_len() {
+            self.failed = true
+            return
+        }
+        val h0 = hex_value(self.source.byte(self.position))
+        val h1 = hex_value(self.source.byte(self.position + 1))
+        val h2 = hex_value(self.source.byte(self.position + 2))
+        val h3 = hex_value(self.source.byte(self.position + 3))
+        if h0 > 15 || h1 > 15 || h2 > 15 || h3 > 15 {
+            self.failed = true
+            return
+        }
+        if h0 != 0 || h1 != 0 {
+            self.failed = true
+            return
+        }
+        val value = h2 * 16 + h3
+        if value < 32 {
+            self.failed = true
+            return
+        }
+        append_ascii_byte(out, value)
+        self.position = self.position + 4
+    }
+}
+
+fun hex_value(byte: uint8): uint8 {
+    if byte >= 48 && byte <= 57 { return byte - 48 }
+    if byte >= 65 && byte <= 70 { return byte - 55 }
+    if byte >= 97 && byte <= 102 { return byte - 87 }
+    return 255
+}
+
+fun ascii_table(): str {
+    return " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+}
+
+fun append_ascii_byte(out: &var String, byte: uint8): void {
+    if byte <= 126 {
+        val index = (byte - 32) as uint64
+        val piece = unsafe { kf_str_slice_to_string(ascii_table(), index, index + 1) }
+        out.append(piece.as_str())
+        return
+    }
+}

@@ -1,0 +1,174 @@
+// Compact JSON serialization primitives. This first slice intentionally
+// writes JSON only; parsing and a generic serialization trait come later.
+
+extern "C" fun kf_str_byte_len(s: str): uint64
+extern "C" fun kf_str_byte_at(s: str, i: uint64): uint8
+extern "C" fun kf_str_slice_to_string(s: str, start: uint64, end: uint64): String
+
+/// Quote a UTF-8 string as a JSON string, escaping every required ASCII byte.
+pub fun json_quote(value: str): String {
+    var out = String.from("\"")
+    val n = unsafe { kf_str_byte_len(value) }
+    var i: uint64 = 0
+    while i < n {
+        val byte = unsafe { kf_str_byte_at(value, i) }
+        append_escaped_byte(&var out, value, i, byte)
+        i = i + 1
+    }
+    out.append("\"")
+    return out
+}
+
+fun append_escaped_byte(out: &var String, value: str, i: uint64, byte: uint8): void {
+    when byte {
+        34 => out.append("\\\"")
+        92 => out.append("\\\\")
+        8  => out.append("\\b")
+        9  => out.append("\\t")
+        10 => out.append("\\n")
+        12 => out.append("\\f")
+        13 => out.append("\\r")
+        _  => {
+            // A RANGE, so it cannot be a `when` arm: every control byte escapes,
+            // not just one. As an arm for 32 this escaped the space character
+            // and passed 0-7, 11 and 14-31 through raw, which is invalid JSON.
+            if byte < 32 {
+                out.append("\\u00")
+                out.append(hex_digit(byte / 16))
+                out.append(hex_digit(byte % 16))
+            } else {
+                val piece = unsafe { kf_str_slice_to_string(value, i, i + 1) }
+                out.append(piece.as_str())
+            }
+        }
+    }
+}
+
+fun hex_digit(n: uint8): str {
+    return when n {
+        0  => "0"
+        1  => "1"
+        2  => "2"
+        3  => "3"
+        4  => "4"
+        5  => "5"
+        6  => "6"
+        7  => "7"
+        8  => "8"
+        9  => "9"
+        10 => "a"
+        11 => "b"
+        12 => "c"
+        13 => "d"
+        14 => "e"
+        _  => "f"
+    }
+}
+
+/// Streaming writer for a single compact JSON object. Field methods retain
+/// insertion order and add commas automatically.
+pub struct JsonWriter {
+    var output: String
+    var fields: uint64
+}
+
+pub fun new_json_writer(): JsonWriter {
+    return JsonWriter { output: "{", fields: 0 }
+}
+
+impl JsonWriter {
+    pub mutating fun field_string(key: str, value: str): void {
+        self.field_prefix(key)
+        // Bound to a local: a fresh String passed straight into a `str`
+        // parameter is a temporary nothing drops (komp #430).
+        val quoted = json_quote(value)
+        self.output.append(quoted.as_str())
+    }
+
+    pub mutating fun field_bool(key: str, value: bool): void {
+        self.field_prefix(key)
+        if value {
+            self.output.append("true")
+        } else {
+            self.output.append("false")
+        }
+    }
+
+    pub mutating fun field_null(key: str): void {
+        self.field_prefix(key)
+        self.output.append("null")
+    }
+
+    pub mutating fun field_int64(key: str, value: int64): void {
+        self.field_prefix(key)
+        self.output.append(value.display())
+    }
+
+    pub mutating fun field_uint32(key: str, value: uint32): void {
+        self.field_int64(key, value as int64)
+    }
+
+    pub fun finish(): String {
+        var result = self.output.clone()
+        result.append("}")
+        return result
+    }
+
+    mutating fun field_prefix(key: str): void {
+        if self.fields > 0 {
+            self.output.append(",")
+        }
+        val quoted_key = json_quote(key)
+        self.output.append(quoted_key.as_str())
+        self.output.append(":")
+        self.fields = self.fields + 1
+    }
+}
+
+/// Splice a pre-serialized JSON value (a nested object or array built by
+/// another writer) as one field.
+impl JsonWriter {
+    pub mutating fun field_raw(key: str, raw: str): void {
+        self.field_prefix(key)
+        self.output.append(raw)
+    }
+}
+
+/// Streaming writer for a compact JSON array. Item methods retain
+/// insertion order and add commas automatically; `item_raw` splices a
+/// pre-serialized value (an object built by a JsonWriter, or a nested
+/// array).
+pub struct JsonArrayWriter {
+    var output: String
+    var items: uint64
+}
+
+pub fun new_json_array_writer(): JsonArrayWriter {
+    return JsonArrayWriter { output: "[", items: 0 }
+}
+
+impl JsonArrayWriter {
+    pub mutating fun item_string(value: str): void {
+        self.item_prefix()
+        val quoted = json_quote(value)
+        self.output.append(quoted.as_str())
+    }
+
+    pub mutating fun item_raw(raw: str): void {
+        self.item_prefix()
+        self.output.append(raw)
+    }
+
+    pub fun finish(): String {
+        var result = self.output.clone()
+        result.append("]")
+        return result
+    }
+
+    mutating fun item_prefix(): void {
+        if self.items > 0 {
+            self.output.append(",")
+        }
+        self.items = self.items + 1
+    }
+}

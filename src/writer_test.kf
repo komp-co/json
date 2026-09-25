@@ -1,0 +1,21 @@
+import core.assert.assert_eq
+import json.writer.*
+
+@test
+fun json_quote_escapes_required_bytes(): void {
+    assert_eq(json_quote("a\"\\b\n\t").as_str(), "\"a\\\"\\\\b\\n\\t\"", "quotes, slashes, and controls escape")
+}
+
+@test
+fun json_quote_escapes_carriage_return(): void {
+    assert_eq(json_quote("a\rb").as_str(), "\"a\\rb\"", "carriage return uses short escape")
+}
+
+@test
+fun json_writer_emits_compact_object(): void {
+    var writer = new_json_writer()
+    writer.field_string("message", "bad \"input\"")
+    writer.field_uint32("start", 12)
+    writer.field_bool("fatal", true)
+    assert_eq(writer.finish().as_str(), "{\"message\":\"bad \\\"input\\\"\",\"start\":12,\"fatal\":true}", "fields serialize in insertion order")
+}
