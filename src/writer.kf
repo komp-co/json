@@ -20,38 +20,51 @@ pub struct JsonWriter {
     var output: String
     var indent: uint64
     var members: List<uint64>
+    var closers: List<uint8>
     var after_key: bool
 }
 
 impl JsonWriter {
     /// Everything on one line, with no space anywhere.
     pub static fun new(): JsonWriter {
-        return JsonWriter { output: "", indent: 0, members: List.new<uint64>(), after_key: false }
+        return JsonWriter.pretty(0)
     }
 
     /// Each member on its own line, `indent` spaces deeper per level.
     pub static fun pretty(indent: uint64): JsonWriter {
-        return JsonWriter { output: "", indent: indent, members: List.new<uint64>(), after_key: false }
+        return JsonWriter {
+            output: "", indent: indent, members: List.new<uint64>(), closers: List.new<uint8>(), after_key: false
+        }
+    }
+
+    /// A compact writer already inside its top-level object.
+    pub static fun object(): JsonWriter {
+        var writer = JsonWriter.new()
+        writer.begin_object()
+        return writer
+    }
+
+    /// A compact writer already inside its top-level array.
+    pub static fun array(): JsonWriter {
+        var writer = JsonWriter.new()
+        writer.begin_array()
+        return writer
     }
 
     pub mutating fun begin_object(): void {
-        self.before_value()
-        self.output.push_byte(123)
-        self.members.push(0)
+        self.open(123, 125)
     }
 
     pub mutating fun end_object(): void {
-        self.close(125)
+        self.close()
     }
 
     pub mutating fun begin_array(): void {
-        self.before_value()
-        self.output.push_byte(91)
-        self.members.push(0)
+        self.open(91, 93)
     }
 
     pub mutating fun end_array(): void {
-        self.close(93)
+        self.close()
     }
 
     /// The name of the object member whose value comes next.
@@ -72,6 +85,10 @@ impl JsonWriter {
     pub mutating fun write_int64(value: int64): void {
         self.before_value()
         self.output.append(value.display())
+    }
+
+    pub mutating fun write_uint32(value: uint32): void {
+        self.write_uint64(value as uint64)
     }
 
     pub mutating fun write_uint64(value: uint64): void {
@@ -115,6 +132,11 @@ impl JsonWriter {
         self.write_int64(value)
     }
 
+    pub mutating fun field_uint32(name: str, value: uint32): void {
+        self.key(name)
+        self.write_uint32(value)
+    }
+
     pub mutating fun field_uint64(name: str, value: uint64): void {
         self.key(name)
         self.write_uint64(value)
@@ -145,9 +167,16 @@ impl JsonWriter {
         return self.members.size() == 0 && self.output.byte_len() > 0
     }
 
-    /// The document so far; complete once `is_complete()`.
+    /// The document, with every container still open closed.
     pub fun finish(): String {
-        return self.output.clone()
+        var out = self.output.clone()
+        var depth = self.closers.size()
+        while depth > 0 {
+            depth = depth - 1
+            if *self.members.at(depth) > 0 { out.append(self.line_break_text(depth).as_str()) }
+            out.push_byte(*self.closers.at(depth))
+        }
+        return out
     }
 
     /// A value right after its key follows it directly; any other value is the
@@ -169,23 +198,39 @@ impl JsonWriter {
         self.line_break(depth)
     }
 
-    mutating fun close(bracket: uint8): void {
+    mutating fun open(bracket: uint8, closer: uint8): void {
+        self.before_value()
+        self.output.push_byte(bracket)
+        self.members.push(0)
+        self.closers.push(closer)
+    }
+
+    mutating fun close(): void {
         val depth = self.members.size()
         if depth == 0 { return }
         val count = *self.members.at(depth - 1)
+        val closer = *self.closers.at(depth - 1)
         self.members.pop()
+        self.closers.pop()
         if count > 0 { self.line_break(depth - 1) }
-        self.output.push_byte(bracket)
+        self.output.push_byte(closer)
     }
 
-    /// A new line indented to `depth` levels; nothing in compact output.
     mutating fun line_break(depth: uint64): void {
-        if self.indent == 0 { return }
-        self.output.push_byte(10)
+        val text = self.line_break_text(depth)
+        self.output.append(text.as_str())
+    }
+
+    /// A new line indented to `depth` levels; "" in compact output.
+    fun line_break_text(depth: uint64): String {
+        var out = String.from("")
+        if self.indent == 0 { return out }
+        out.push_byte(10)
         var spaces = depth * self.indent
         while spaces > 0 {
-            self.output.push_byte(32)
+            out.push_byte(32)
             spaces = spaces - 1
         }
+        return out
     }
 }

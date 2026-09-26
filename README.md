@@ -44,14 +44,17 @@ The writer places every comma, line break and indent. An object member is a
 | Method | Writes |
 |---|---|
 | `write_string(str)` | a JSON string, escaped |
-| `write_int64` / `write_uint64` | an integer |
+| `write_int64` / `write_uint32` / `write_uint64` | an integer |
 | `write_float64` | the shortest text that reads back as the same float; `null` for NaN and the infinities, which JSON cannot spell |
 | `write_bool` / `write_null` | `true`, `false`, `null` |
 | `write_raw(str)` | already-serialized JSON, as one value |
 | `begin_object` … `end_object`, `begin_array` … `end_array` | a nested container |
 
-`is_complete()` says whether every container begun has been ended.
-`"text".json_quoted()` gives one string as a JSON literal.
+`JsonWriter.object()` and `JsonWriter.array()` start a compact writer already
+inside its top-level container. `finish()` closes whatever is still open, so a
+flat object is `object()`, its fields, `finish()`; `is_complete()` says
+whether every container begun has been ended. `"text".json_quoted()` gives one
+string as a JSON literal.
 
 ## Reading
 

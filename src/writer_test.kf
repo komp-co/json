@@ -115,3 +115,40 @@ fun written_json_reads_back(): void {
     val _key = reader.read_key()
     assert_eq(reader.read_string().as_str(), "tab\there, é", "writer and reader agree")
 }
+
+@test
+fun an_object_writer_starts_inside_its_object(): void {
+    var w = JsonWriter.object()
+    w.field_uint32("line", 12)
+    assert_eq(w.finish().as_str(), "{\"line\":12}", "finish closes it")
+}
+
+@test
+fun an_array_writer_starts_inside_its_array(): void {
+    var w = JsonWriter.array()
+    w.write_string("a")
+    assert_eq(w.finish().as_str(), "[\"a\"]", "finish closes it")
+}
+
+@test
+fun finish_closes_every_open_container(): void {
+    var w = JsonWriter.pretty(2)
+    w.begin_object()
+    w.key("list")
+    w.begin_array()
+    w.write_null()
+    val expected = """{
+  "list": [
+    null
+  ]
+}"""
+    assert_eq(w.finish().as_str(), expected, "innermost first, each on its own line")
+}
+
+@test
+fun finish_leaves_the_writer_open(): void {
+    var w = JsonWriter.array()
+    val _first = w.finish()
+    w.write_bool(true)
+    assert_eq(w.finish().as_str(), "[true]", "writing can go on after a look")
+}
