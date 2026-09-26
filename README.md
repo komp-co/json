@@ -1,92 +1,103 @@
 # json
 
-A small JSON reader/writer library for [**KFlat / komp**](https://github.com/komp-co/komp),
-written in `.kf`. It provides a pull-based parser and a streaming serializer with
-no dynamic JSON value tree — you read and write fields directly, which keeps it
-allocation-light and a natural fit for komp's move/ownership model.
-
-It is used by the komp compiler itself (the `kf-driver` and `kf-interface`
-crates) to read and write crate-interface metadata.
-
-## Features
-
-- **Pull parser** (`JsonReader`) — walk objects and arrays field-by-field; reads
-  strings (with `\`-escapes and `\uXXXX`), integers, booleans, and `null`.
-- **Streaming writer** (`JsonWriter`, `JsonArrayWriter`) — append fields/items
-  and `finish()` to a `String`; keys and string values are escaped via
-  `json_quote`.
-- No JSON value/DOM type, no reflection — direct read/write only.
-
-## Usage
-
-Add it as a path dependency in your `kf.toml`:
+JSON for [KFlat](https://github.com/komp-co/komp): a reader that walks a
+document in order and a writer that builds one, compact or indented. There is no
+value tree; you read and write fields directly, which keeps it allocation-light.
 
 ```toml
 [dependencies]
-json = { path = "../json" }
+json = "0.2"
 ```
 
-### Writing
+## Writing
 
 ```kf
-import json.writer.*
+import json.writer.JsonWriter
 
-var w = new_json_writer()
+var w = JsonWriter.pretty(2)       // JsonWriter.new() writes one line
+w.begin_object()
 w.field_string("name", "komp")
-w.field_int64("count", 42)
-w.field_bool("ok", true)
-val out = w.finish()          // {"name":"komp","count":42,"ok":true}
+w.field_int64("stars", 42)
+w.key("tags")
+w.begin_array()
+w.write_string("compiler")
+w.write_string("self-hosted")
+w.end_array()
+w.end_object()
+val text = w.finish()
 ```
 
-Arrays use `JsonArrayWriter` (`item_string` / `item_raw` / `finish`), and
-`field_raw` / `item_raw` splice already-serialized JSON in verbatim.
+```json
+{
+  "name": "komp",
+  "stars": 42,
+  "tags": [
+    "compiler",
+    "self-hosted"
+  ]
+}
+```
 
-### Reading
+The writer places every comma, line break and indent. An object member is a
+`key` and one value; `field_*` does both. Values:
+
+| Method | Writes |
+|---|---|
+| `write_string(str)` | a JSON string, escaped |
+| `write_int64` / `write_uint64` | an integer |
+| `write_float64` | the shortest text that reads back as the same float; `null` for NaN and the infinities, which JSON cannot spell |
+| `write_bool` / `write_null` | `true`, `false`, `null` |
+| `write_raw(str)` | already-serialized JSON, as one value |
+| `begin_object` … `end_object`, `begin_array` … `end_array` | a nested container |
+
+`is_complete()` says whether every container begun has been ended.
+`"text".json_quoted()` gives one string as a JSON literal.
+
+## Reading
 
 ```kf
 import json.reader.*
 
-var r = new_json_reader("{\"name\":\"komp\",\"count\":42}")
+var r = JsonReader.new(text)
+var name = String.from("")
 if r.begin_object() {
     while r.object_has_next() {
         val key = r.read_key()
-        if key.as_str() == "name"  { val name  = r.read_string() }
-        if key.as_str() == "count" { val count = r.read_int64()  }
+        when key.as_str() {
+            "name" => name = r.read_string()
+            _ => r.skip_value()
+        }
     }
 }
-// check r.has_error() after parsing
+if r.has_error() { println("bad JSON at byte ${r.error_offset()}") }
 ```
 
-## Public API
+| Method | Reads |
+|---|---|
+| `begin_object` / `object_has_next` / `read_key` | an object, member by member |
+| `begin_array` / `array_has_next` | an array, element by element |
+| `read_string` | a string, every escape decoded to UTF-8, surrogate pairs included |
+| `read_int64` / `read_uint64` | an integer; a fraction, an exponent or overflow is an error |
+| `read_float64` | any number, to the nearest float64 |
+| `read_bool` / `read_null` / `take_null` | `true`/`false`, `null`, or `null` if it is next |
+| `skip_value` | whatever comes next, nested containers included |
+| `peek_kind` | what comes next, as a `JsonKind`, without reading it |
+| `at_end` | only whitespace is left |
 
-**`src/reader.kf`** — `JsonReader`:
-`new_json_reader(source)`, `has_error()`, `begin_object()`, `object_has_next()`,
-`read_key()`, `begin_array()`, `array_has_next()`, `read_string()`,
-`read_int64()`, `read_bool()`, `read_null()`.
+A read that fails returns a default and sets the error: `has_error()` and
+`error_offset()`, the byte where it happened. Every read after the first error
+fails too, so checking once at the end is enough. The reader is strict JSON:
+no trailing commas, no leading zeros, no raw control bytes in strings.
 
-**`src/writer.kf`** — `JsonWriter`:
-`new_json_writer()`, `field_string/bool/null/int64/uint32/raw(key, …)`,
-`finish()`; `JsonArrayWriter`: `new_json_array_writer()`,
-`item_string/item_raw`, `finish()`; plus the standalone `json_quote(str)`.
-
-## Requirements
-
-Depends on komp's standard `core` and `alloc` crates. The `kf.toml` resolves
-them at `../komp/libs/{core,alloc}`, so keep a komp checkout as a sibling
-directory named lowercase `komp`:
-
-```
-.../
-├── komp/     # the compiler + libs/core, libs/alloc
-└── json/     # this repo
-```
-
-Build/test with the komp compiler:
+## Developing
 
 ```sh
-komp test .        # runs the reader/writer test suites
+komp test .
 ```
+
+`json` needs a C compiler, as every komp build does: `read_float64` parses
+through the C library's `strtod`.
 
 ## License
 
-[MIT](LICENSE) — free to use, modify, and distribute.
+[MIT](LICENSE)

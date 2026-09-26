@@ -1,8 +1,7 @@
 [project]
 name = "json"
-version = "0.1.0"
+version = "0.2.0"
 kind = "lib"
 
-[dependencies]
-core = { path = "../komp/libs/core" }
-alloc = { path = "../komp/libs/alloc" }
+[native]
+hosted_c_sources = ["native/json.c"]
