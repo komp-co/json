@@ -1,0 +1,23 @@
+import core.assert.assert_eq
+
+@test
+fun quotes_and_backslashes_are_escaped(): void {
+    assert_eq("a\"\\b".json_quoted().as_str(), "\"a\\\"\\\\b\"", "the two that end or escape a string")
+}
+
+@test
+fun short_control_escapes_are_used(): void {
+    assert_eq("\n\t\r".json_quoted().as_str(), "\"\\n\\t\\r\"", "the escapes JSON names")
+}
+
+@test
+fun other_control_bytes_are_unicode_escapes(): void {
+    var text = String.from("")
+    text.push_byte(1)
+    assert_eq(text.as_str().json_quoted().as_str(), "\"\\u0001\"", "no raw control byte in JSON text")
+}
+
+@test
+fun utf8_is_kept(): void {
+    assert_eq("café".json_quoted().as_str(), "\"café\"", "JSON text is UTF-8")
+}

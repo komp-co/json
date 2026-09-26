@@ -1,174 +1,236 @@
-// Compact JSON serialization primitives. This first slice intentionally
-// writes JSON only; parsing and a generic serialization trait come later.
+// Writing one JSON document, compact or indented.
+//
+//   var w = JsonWriter.pretty(2)            // or JsonWriter.new(): one line
+//   w.begin_object()
+//   w.field_string("name", "komp")
+//   w.key("tags")
+//   w.begin_array()
+//   w.write_string("compiler")
+//   w.end_array()
+//   w.end_object()
+//   val text = w.finish()
 
-extern "C" fun kf_str_byte_len(s: str): uint64
-extern "C" fun kf_str_byte_at(s: str, i: uint64): uint8
-extern "C" fun kf_str_slice_to_string(s: str, start: uint64, end: uint64): String
+import alloc.list.*
 
-/// Quote a UTF-8 string as a JSON string, escaping every required ASCII byte.
-pub fun json_quote(value: str): String {
-    var out = String.from("\"")
-    val n = unsafe { kf_str_byte_len(value) }
-    var i: uint64 = 0
-    while i < n {
-        val byte = unsafe { kf_str_byte_at(value, i) }
-        append_escaped_byte(&var out, value, i, byte)
-        i = i + 1
-    }
-    out.append("\"")
-    return out
-}
+extern "C" fun kf_float64_bits(value: float64): uint64
 
-fun append_escaped_byte(out: &var String, value: str, i: uint64, byte: uint8): void {
-    when byte {
-        34 => out.append("\\\"")
-        92 => out.append("\\\\")
-        8  => out.append("\\b")
-        9  => out.append("\\t")
-        10 => out.append("\\n")
-        12 => out.append("\\f")
-        13 => out.append("\\r")
-        _  => {
-            // A RANGE, so it cannot be a `when` arm: every control byte escapes,
-            // not just one. As an arm for 32 this escaped the space character
-            // and passed 0-7, 11 and 14-31 through raw, which is invalid JSON.
-            if byte < 32 {
-                out.append("\\u00")
-                out.append(hex_digit(byte / 16))
-                out.append(hex_digit(byte % 16))
-            } else {
-                val piece = unsafe { kf_str_slice_to_string(value, i, i + 1) }
-                out.append(piece.as_str())
-            }
-        }
-    }
-}
-
-fun hex_digit(n: uint8): str {
-    return when n {
-        0  => "0"
-        1  => "1"
-        2  => "2"
-        3  => "3"
-        4  => "4"
-        5  => "5"
-        6  => "6"
-        7  => "7"
-        8  => "8"
-        9  => "9"
-        10 => "a"
-        11 => "b"
-        12 => "c"
-        13 => "d"
-        14 => "e"
-        _  => "f"
-    }
-}
-
-/// Streaming writer for a single compact JSON object. Field methods retain
-/// insertion order and add commas automatically.
+/// Commas, and in pretty output line breaks and indentation, are placed by the
+/// writer. Every member of an object is a `key` followed by one value.
 pub struct JsonWriter {
     var output: String
-    var fields: uint64
-}
-
-pub fun new_json_writer(): JsonWriter {
-    return JsonWriter { output: "{", fields: 0 }
+    var indent: uint64
+    var members: List<uint64>
+    var closers: List<uint8>
+    var after_key: bool
 }
 
 impl JsonWriter {
-    pub mutating fun field_string(key: str, value: str): void {
-        self.field_prefix(key)
-        // Bound to a local: a fresh String passed straight into a `str`
-        // parameter is a temporary nothing drops (komp #430).
-        val quoted = json_quote(value)
-        self.output.append(quoted.as_str())
+    /// Everything on one line, with no space anywhere.
+    pub static fun new(): JsonWriter {
+        return JsonWriter.pretty(0)
     }
 
-    pub mutating fun field_bool(key: str, value: bool): void {
-        self.field_prefix(key)
-        if value {
-            self.output.append("true")
-        } else {
-            self.output.append("false")
+    /// Each member on its own line, `indent` spaces deeper per level.
+    pub static fun pretty(indent: uint64): JsonWriter {
+        return JsonWriter {
+            output: "", indent: indent, members: List.new<uint64>(), closers: List.new<uint8>(), after_key: false
         }
     }
 
-    pub mutating fun field_null(key: str): void {
-        self.field_prefix(key)
-        self.output.append("null")
+    /// A compact writer already inside its top-level object.
+    pub static fun object(): JsonWriter {
+        var writer = JsonWriter.new()
+        writer.begin_object()
+        return writer
     }
 
-    pub mutating fun field_int64(key: str, value: int64): void {
-        self.field_prefix(key)
+    /// A compact writer already inside its top-level array.
+    pub static fun array(): JsonWriter {
+        var writer = JsonWriter.new()
+        writer.begin_array()
+        return writer
+    }
+
+    pub mutating fun begin_object(): void {
+        self.open(123, 125)
+    }
+
+    pub mutating fun end_object(): void {
+        self.close()
+    }
+
+    pub mutating fun begin_array(): void {
+        self.open(91, 93)
+    }
+
+    pub mutating fun end_array(): void {
+        self.close()
+    }
+
+    /// The name of the object member whose value comes next.
+    pub mutating fun key(name: str): void {
+        self.next_member()
+        val quoted = name.json_quoted()
+        self.output.append(quoted.as_str())
+        self.output.append(if self.indent > 0 { ": " } else { ":" })
+        self.after_key = true
+    }
+
+    pub mutating fun write_string(value: str): void {
+        self.before_value()
+        val quoted = value.json_quoted()
+        self.output.append(quoted.as_str())
+    }
+
+    pub mutating fun write_int64(value: int64): void {
+        self.before_value()
         self.output.append(value.display())
     }
 
-    pub mutating fun field_uint32(key: str, value: uint32): void {
-        self.field_int64(key, value as int64)
+    pub mutating fun write_uint32(value: uint32): void {
+        self.write_uint64(value as uint64)
     }
 
+    pub mutating fun write_uint64(value: uint64): void {
+        self.before_value()
+        val text = String.of(&value)
+        self.output.append(text.as_str())
+    }
+
+    /// NaN and the infinities have no JSON spelling, so they are written as
+    /// `null`.
+    pub mutating fun write_float64(value: float64): void {
+        self.before_value()
+        val exponent = (unsafe { kf_float64_bits(value) } >> 52) & 2047
+        val text = if exponent == 2047 { String.from("null") } else { String.of(&value) }
+        self.output.append(text.as_str())
+    }
+
+    pub mutating fun write_bool(value: bool): void {
+        self.before_value()
+        self.output.append(if value { "true" } else { "false" })
+    }
+
+    pub mutating fun write_null(): void {
+        self.before_value()
+        self.output.append("null")
+    }
+
+    /// Already-serialized JSON, spliced in as one value.
+    pub mutating fun write_raw(json: str): void {
+        self.before_value()
+        self.output.append(json)
+    }
+
+    pub mutating fun field_string(name: str, value: str): void {
+        self.key(name)
+        self.write_string(value)
+    }
+
+    pub mutating fun field_int64(name: str, value: int64): void {
+        self.key(name)
+        self.write_int64(value)
+    }
+
+    pub mutating fun field_uint32(name: str, value: uint32): void {
+        self.key(name)
+        self.write_uint32(value)
+    }
+
+    pub mutating fun field_uint64(name: str, value: uint64): void {
+        self.key(name)
+        self.write_uint64(value)
+    }
+
+    pub mutating fun field_float64(name: str, value: float64): void {
+        self.key(name)
+        self.write_float64(value)
+    }
+
+    pub mutating fun field_bool(name: str, value: bool): void {
+        self.key(name)
+        self.write_bool(value)
+    }
+
+    pub mutating fun field_null(name: str): void {
+        self.key(name)
+        self.write_null()
+    }
+
+    pub mutating fun field_raw(name: str, json: str): void {
+        self.key(name)
+        self.write_raw(json)
+    }
+
+    /// Every object and array that was begun has been ended.
+    pub fun is_complete(): bool {
+        return self.members.size() == 0 && self.output.byte_len() > 0
+    }
+
+    /// The document, with every container still open closed.
     pub fun finish(): String {
-        var result = self.output.clone()
-        result.append("}")
-        return result
-    }
-
-    mutating fun field_prefix(key: str): void {
-        if self.fields > 0 {
-            self.output.append(",")
+        var out = self.output.clone()
+        var depth = self.closers.size()
+        while depth > 0 {
+            depth = depth - 1
+            if *self.members.at(depth) > 0 { out.append(self.line_break_text(depth).as_str()) }
+            out.push_byte(*self.closers.at(depth))
         }
-        val quoted_key = json_quote(key)
-        self.output.append(quoted_key.as_str())
-        self.output.append(":")
-        self.fields = self.fields + 1
-    }
-}
-
-/// Splice a pre-serialized JSON value (a nested object or array built by
-/// another writer) as one field.
-impl JsonWriter {
-    pub mutating fun field_raw(key: str, raw: str): void {
-        self.field_prefix(key)
-        self.output.append(raw)
-    }
-}
-
-/// Streaming writer for a compact JSON array. Item methods retain
-/// insertion order and add commas automatically; `item_raw` splices a
-/// pre-serialized value (an object built by a JsonWriter, or a nested
-/// array).
-pub struct JsonArrayWriter {
-    var output: String
-    var items: uint64
-}
-
-pub fun new_json_array_writer(): JsonArrayWriter {
-    return JsonArrayWriter { output: "[", items: 0 }
-}
-
-impl JsonArrayWriter {
-    pub mutating fun item_string(value: str): void {
-        self.item_prefix()
-        val quoted = json_quote(value)
-        self.output.append(quoted.as_str())
+        return out
     }
 
-    pub mutating fun item_raw(raw: str): void {
-        self.item_prefix()
-        self.output.append(raw)
-    }
-
-    pub fun finish(): String {
-        var result = self.output.clone()
-        result.append("]")
-        return result
-    }
-
-    mutating fun item_prefix(): void {
-        if self.items > 0 {
-            self.output.append(",")
+    /// A value right after its key follows it directly; any other value is the
+    /// next member of its array.
+    mutating fun before_value(): void {
+        if self.after_key {
+            self.after_key = false
+            return
         }
-        self.items = self.items + 1
+        if self.members.size() > 0 { self.next_member() }
+    }
+
+    mutating fun next_member(): void {
+        val depth = self.members.size()
+        if depth == 0 { return }
+        val count = *self.members.at(depth - 1)
+        if count > 0 { self.output.push_byte(44) }
+        self.members.set(depth - 1, count + 1)
+        self.line_break(depth)
+    }
+
+    mutating fun open(bracket: uint8, closer: uint8): void {
+        self.before_value()
+        self.output.push_byte(bracket)
+        self.members.push(0)
+        self.closers.push(closer)
+    }
+
+    mutating fun close(): void {
+        val depth = self.members.size()
+        if depth == 0 { return }
+        val count = *self.members.at(depth - 1)
+        val closer = *self.closers.at(depth - 1)
+        self.members.pop()
+        self.closers.pop()
+        if count > 0 { self.line_break(depth - 1) }
+        self.output.push_byte(closer)
+    }
+
+    mutating fun line_break(depth: uint64): void {
+        val text = self.line_break_text(depth)
+        self.output.append(text.as_str())
+    }
+
+    /// A new line indented to `depth` levels; "" in compact output.
+    fun line_break_text(depth: uint64): String {
+        var out = String.from("")
+        if self.indent == 0 { return out }
+        out.push_byte(10)
+        var spaces = depth * self.indent
+        while spaces > 0 {
+            out.push_byte(32)
+            spaces = spaces - 1
+        }
+        return out
     }
 }

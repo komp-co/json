@@ -1,56 +1,237 @@
 import core.assert.assert_eq
 
-fun read_first_key(): String {
-    var reader = new_json_reader("{\"kfi\":1}")
-    val _start = reader.begin_object()
-    return reader.read_key()
-}
-
-fun read_first_number(): int64 {
-    var reader = new_json_reader("{\"kfi\":1}")
-    val _start = reader.begin_object()
-    val _key = reader.read_key()
-    return reader.read_int64()
-}
-
-fun read_escaped_value(): String {
-    var reader = new_json_reader("[\"say \\\"hi\\\"\\n\"]")
+/// A reader positioned at the first element of the array `text`.
+fun in_array(text: str): JsonReader {
+    var reader = JsonReader.new(text)
     val _start = reader.begin_array()
+    return reader
+}
+
+fun first_string(text: str): String {
+    var reader = in_array(text)
     return reader.read_string()
 }
 
-@test
-fun cursor_reads_object_keys(): void {
-    assert_eq(read_first_key().as_str(), "kfi", "cursor reads an object key")
+fun first_string_fails(text: str): bool {
+    var reader = in_array(text)
+    val _text = reader.read_string()
+    return reader.has_error()
 }
 
 @test
-fun cursor_reads_integer_values(): void {
-    assert_eq(read_first_number(), 1, "cursor reads an integer")
+fun an_object_key_is_read(): void {
+    var reader = JsonReader.new("{\"kfi\":1}")
+    val _start = reader.begin_object()
+    assert_eq(reader.read_key().as_str(), "kfi", "the key, without its colon")
 }
 
 @test
-fun cursor_decodes_string_escapes(): void {
-    assert_eq(read_escaped_value().as_str(), "say \"hi\"\n", "cursor decodes JSON escapes")
+fun short_escapes_are_decoded(): void {
+    assert_eq(first_string("[\"say \\\"hi\\\"\\n\\t\\/\"]").as_str(), "say \"hi\"\n\t/", "quote, newline, tab, slash")
 }
 
 @test
-fun cursor_detects_array_end(): void {
-    var reader = new_json_reader("[]")
-    val _start = reader.begin_array()
-    assert_eq(reader.array_has_next(), false, "empty array ends immediately")
+fun a_unicode_escape_below_128_is_one_byte(): void {
+    assert_eq(first_string("[\"\\u0041\"]").as_str(), "A", "ASCII")
 }
 
 @test
-fun cursor_reports_malformed_input(): void {
-    var reader = new_json_reader("{")
+fun a_unicode_escape_becomes_utf8(): void {
+    assert_eq(first_string("[\"caf\\u00e9\"]").as_str(), "café", "U+00E9 is two bytes")
+}
+
+@test
+fun a_three_byte_unicode_escape_becomes_utf8(): void {
+    assert_eq(first_string("[\"\\u20ac\"]").as_str(), "€", "U+20AC is three bytes")
+}
+
+@test
+fun a_surrogate_pair_becomes_one_character(): void {
+    assert_eq(first_string("[\"\\ud83d\\ude00\"]").as_str(), "😀", "U+1F600 is four bytes")
+}
+
+@test
+fun a_control_escape_is_decoded(): void {
+    assert_eq(first_string("[\"a\\u0001b\"]").byte_at(1), 1, "\\u0001 is legal JSON")
+}
+
+@test
+fun a_lone_low_surrogate_is_an_error(): void {
+    assert_eq(first_string_fails("[\"\\udc00\"]"), true, "a low surrogate needs a high one before it")
+}
+
+@test
+fun an_unpaired_high_surrogate_is_an_error(): void {
+    assert_eq(first_string_fails("[\"\\ud83dx\"]"), true, "a high surrogate needs a low one after it")
+}
+
+@test
+fun a_raw_control_byte_in_a_string_is_an_error(): void {
+    assert_eq(first_string_fails("[\"a\tb\"]"), true, "a tab must be written \\t")
+}
+
+@test
+fun utf8_in_a_string_passes_through(): void {
+    assert_eq(first_string("[\"naïve ✓\"]").as_str(), "naïve ✓", "bytes are copied as they are")
+}
+
+@test
+fun an_integer_is_read(): void {
+    var reader = in_array("[-42]")
+    assert_eq(reader.read_int64(), -42, "negative integers")
+}
+
+@test
+fun the_largest_int64_is_read(): void {
+    var reader = in_array("[9223372036854775807]")
+    assert_eq(reader.read_int64(), 9223372036854775807, "2^63 - 1")
+}
+
+@test
+fun the_smallest_int64_is_read(): void {
+    var reader = in_array("[-9223372036854775808]")
+    val largest: int64 = 9223372036854775807
+    assert_eq(reader.read_int64(), (0 - largest) - 1, "-2^63")
+}
+
+@test
+fun an_int64_overflow_is_an_error(): void {
+    var reader = in_array("[9223372036854775808]")
+    val _value = reader.read_int64()
+    assert_eq(reader.has_error(), true, "2^63 does not fit")
+}
+
+@test
+fun a_fraction_is_not_an_int64(): void {
+    var reader = in_array("[1.5]")
+    val _value = reader.read_int64()
+    assert_eq(reader.has_error(), true, "read_float64 reads it")
+}
+
+@test
+fun the_largest_uint64_is_read(): void {
+    var reader = in_array("[18446744073709551615]")
+    val none: uint64 = 0
+    assert_eq(reader.read_uint64(), none - 1, "2^64 - 1")
+}
+
+@test
+fun a_negative_uint64_is_an_error(): void {
+    var reader = in_array("[-1]")
+    val _value = reader.read_uint64()
+    assert_eq(reader.has_error(), true, "unsigned")
+}
+
+@test
+fun a_float_is_read(): void {
+    var reader = in_array("[-2.5e3]")
+    assert_eq(reader.read_float64() == -2500.0, true, "sign, fraction and exponent")
+}
+
+@test
+fun an_integer_reads_as_a_float(): void {
+    var reader = in_array("[3]")
+    assert_eq(reader.read_float64() == 3.0, true, "every JSON number is a float")
+}
+
+@test
+fun a_leading_zero_is_an_error(): void {
+    var reader = in_array("[012]")
+    val _value = reader.read_int64()
+    val _more = reader.array_has_next()
+    assert_eq(reader.has_error(), true, "JSON writes no leading zeros")
+}
+
+@test
+fun a_bare_decimal_point_is_an_error(): void {
+    var reader = in_array("[1.]")
+    val _value = reader.read_float64()
+    assert_eq(reader.has_error(), true, "a digit must follow the point")
+}
+
+@test
+fun peek_kind_sees_a_string(): void {
+    var reader = in_array("[\"x\"]")
+    assert_eq(reader.peek_kind() == JsonKind.String, true, "by its quote")
+}
+
+@test
+fun peek_kind_sees_a_negative_number(): void {
+    var reader = in_array("[-1]")
+    assert_eq(reader.peek_kind() == JsonKind.Number, true, "by its sign")
+}
+
+@test
+fun peek_kind_sees_the_end(): void {
+    var reader = JsonReader.new("  ")
+    assert_eq(reader.peek_kind() == JsonKind.End, true, "only whitespace is left")
+}
+
+@test
+fun peek_kind_consumes_nothing(): void {
+    var reader = in_array("[true]")
+    val _kind = reader.peek_kind()
+    assert_eq(reader.read_bool(), true, "the value is still there to read")
+}
+
+@test
+fun an_empty_array_ends_at_once(): void {
+    var reader = in_array("[]")
+    assert_eq(reader.array_has_next(), false, "no elements")
+}
+
+@test
+fun elements_without_a_comma_are_an_error(): void {
+    var reader = in_array("[1 2]")
+    val _value = reader.read_int64()
+    val _more = reader.array_has_next()
+    assert_eq(reader.has_error(), true, "elements are separated by commas")
+}
+
+@test
+fun elements_are_read_in_order(): void {
+    var reader = in_array("[1, 2, 3]")
+    var sum: int64 = 0
+    while reader.array_has_next() { sum = sum * 10 + reader.read_int64() }
+    assert_eq(sum, 123, "each element once, in order")
+}
+
+@test
+fun a_trailing_comma_is_an_error(): void {
+    var reader = in_array("[1,]")
+    val _value = reader.read_int64()
+    val _more = reader.array_has_next()
+    assert_eq(reader.has_error(), true, "JSON allows no trailing comma")
+}
+
+@test
+fun malformed_input_is_an_error(): void {
+    var reader = JsonReader.new("{")
     val _start = reader.begin_object()
     val _key = reader.read_key()
-    assert_eq(reader.has_error(), true, "malformed input sets an error")
+    assert_eq(reader.has_error(), true, "the object never closes")
+}
+
+@test
+fun the_error_offset_is_where_reading_failed(): void {
+    var reader = JsonReader.new("[1, x]")
+    val _start = reader.begin_array()
+    val _one = reader.read_int64()
+    val _more = reader.array_has_next()
+    val _value = reader.read_int64()
+    assert_eq(reader.error_offset(), 4, "the byte where `x` is")
+}
+
+@test
+fun at_end_after_the_document(): void {
+    var reader = JsonReader.new("[] \n")
+    val _start = reader.begin_array()
+    val _more = reader.array_has_next()
+    assert_eq(reader.at_end(), true, "only whitespace follows")
 }
 
 fun key_after_skipped_value(): String {
-    var reader = new_json_reader("{\"skip\":{\"a\":[1,-2.5e3,\"x\",true,null,{}]},\"keep\":\"yes\"}")
+    var reader = JsonReader.new("{\"skip\":{\"a\":[1,-2.5e3,\"x\",true,null,{}]},\"keep\":\"yes\"}")
     val _start = reader.begin_object()
     val _skipped_key = reader.read_key()
     reader.skip_value()
@@ -66,15 +247,13 @@ fun skip_value_passes_over_nested_containers(): void {
 
 @test
 fun take_null_leaves_a_non_null_value(): void {
-    var reader = new_json_reader("[\"text\"]")
-    val _start = reader.begin_array()
+    var reader = in_array("[\"text\"]")
     val _was_null = reader.take_null()
     assert_eq(reader.read_string().as_str(), "text", "a non-null value is left for the next read")
 }
 
 @test
 fun take_null_consumes_null(): void {
-    var reader = new_json_reader("[null]")
-    val _start = reader.begin_array()
+    var reader = in_array("[null]")
     assert_eq(reader.take_null(), true, "null is taken")
 }

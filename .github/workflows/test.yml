@@ -1,0 +1,35 @@
+name: Test
+
+# The tests, run by the latest released komp: what a user of the package has.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the latest released komp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --repo komp-co/komp --json tagName --jq .tagName)
+          seed="https://github.com/komp-co/komp/releases/download/$tag/kflat-seed-${tag#v}.tar.gz"
+          git clone -q --depth 1 --branch "$tag" https://github.com/komp-co/komp "$RUNNER_TEMP/komp"
+          curl -fsSL -o "$RUNNER_TEMP/seed.tar.gz" "$seed"
+          want=$(curl -fsSL "$seed.sha256" | cut -d' ' -f1)
+          [ "$(sha256sum "$RUNNER_TEMP/seed.tar.gz" | cut -d' ' -f1)" = "$want" ]
+          mkdir "$RUNNER_TEMP/seed" "$RUNNER_TEMP/komp/bin"
+          tar -xzf "$RUNNER_TEMP/seed.tar.gz" -C "$RUNNER_TEMP/seed" --strip-components=1
+          cc -O2 -o "$RUNNER_TEMP/komp/bin/komp" "$RUNNER_TEMP/seed/komp.c"
+          cc -O2 -o "$RUNNER_TEMP/komp/bin/kflatc" "$RUNNER_TEMP/seed/kflatc.c"
+          echo "$RUNNER_TEMP/komp/bin" >> "$GITHUB_PATH"
+
+      - name: Test
+        run: komp test .

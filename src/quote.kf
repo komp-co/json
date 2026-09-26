@@ -1,0 +1,40 @@
+// JSON string literals.
+
+/// `self` as a JSON string, quotes included. `"`, `\` and every control byte
+/// are escaped; every other byte, UTF-8 included, is kept as it is.
+pub fun str.json_quoted(): String {
+    var out = String.from("\"")
+    val n = self.byte_len()
+    var i: uint64 = 0
+    while i < n {
+        out.push_json_escaped(self.byte_at(i))
+        i = i + 1
+    }
+    out.push_byte(34)
+    return out
+}
+
+mutating fun String.push_json_escaped(byte: uint8): void {
+    when byte {
+        34 => self.append("\\\"")
+        92 => self.append("\\\\")
+        8  => self.append("\\b")
+        9  => self.append("\\t")
+        10 => self.append("\\n")
+        12 => self.append("\\f")
+        13 => self.append("\\r")
+        _  => {
+            if byte < 32 {
+                self.append("\\u00")
+                self.push_byte(hex_digit(byte / 16))
+                self.push_byte(hex_digit(byte % 16))
+            } else {
+                self.push_byte(byte)
+            }
+        }
+    }
+}
+
+fun hex_digit(n: uint8): uint8 {
+    return if n < 10 { 48 + n } else { 87 + n }
+}
