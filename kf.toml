@@ -5,3 +5,6 @@ kind = "lib"
 
 [native]
 hosted_c_sources = ["native/json.c"]
+
+[dev-dependencies]
+komp_test = "0.1"
