@@ -10,8 +10,6 @@
 //   w.end_object()
 //   val text = w.finish()
 
-import alloc.list.*
-
 extern "C" fun kf_float64_bits(value: float64): uint64
 
 /// Commas, and in pretty output line breaks and indentation, are placed by the
