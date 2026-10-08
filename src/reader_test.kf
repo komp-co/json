@@ -1,4 +1,5 @@
 import core.assert.assert_eq
+import testing.test
 
 /// A reader positioned at the first element of the array `text`.
 fun in_array(text: str): JsonReader {

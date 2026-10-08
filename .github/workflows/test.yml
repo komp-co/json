@@ -15,21 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the latest released komp
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Install the latest released komp and toolchain
         run: |
-          tag=$(gh release view --repo komp-co/komp --json tagName --jq .tagName)
-          seed="https://github.com/komp-co/komp/releases/download/$tag/kflat-seed-${tag#v}.tar.gz"
-          git clone -q --depth 1 --branch "$tag" https://github.com/komp-co/komp "$RUNNER_TEMP/komp"
-          curl -fsSL -o "$RUNNER_TEMP/seed.tar.gz" "$seed"
-          want=$(curl -fsSL "$seed.sha256" | cut -d' ' -f1)
-          [ "$(sha256sum "$RUNNER_TEMP/seed.tar.gz" | cut -d' ' -f1)" = "$want" ]
-          mkdir "$RUNNER_TEMP/seed" "$RUNNER_TEMP/komp/bin"
-          tar -xzf "$RUNNER_TEMP/seed.tar.gz" -C "$RUNNER_TEMP/seed" --strip-components=1
-          cc -O2 -o "$RUNNER_TEMP/komp/bin/komp" "$RUNNER_TEMP/seed/komp.c"
-          cc -O2 -o "$RUNNER_TEMP/komp/bin/kflatc" "$RUNNER_TEMP/seed/kflatc.c"
-          echo "$RUNNER_TEMP/komp/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://github.com/komp-co/komp/releases/latest/download/install.sh | sh
+          echo "$HOME/.kflat/bin" >> "$GITHUB_PATH"
 
       - name: Test
         run: komp test .

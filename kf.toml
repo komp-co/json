@@ -1,7 +1,10 @@
 [project]
 name = "json"
-version = "0.2.0"
+version = "0.2.1"
 kind = "lib"
 
 [native]
 hosted_c_sources = ["native/json.c"]
+
+[dev-dependencies]
+komp_test = "0.1"
